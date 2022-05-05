@@ -1,6 +1,7 @@
 package converter
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 	"strconv"
@@ -27,6 +28,16 @@ func convertHTMLToStatements(doc *html.Node, goAppPkg string) (*Statement, error
 			if nthChild > 1 {
 				el = Line().Qual(goAppPkg, "Text").Call(Lit(strings.TrimSpace(node.Data)))
 			}
+		} else if node.Type == html.ElementNode && node.DataAtom.String() == "svg" {
+			// svg nodes should be app.Raw( xml )
+			rawSvg, err := rawElement(node)
+			if err != nil {
+				return nil, err
+			}
+			// now that we've rendered the raw svg data,
+			// the children loop below should be skipped
+			node.FirstChild = nil
+			el = Qual(goAppPkg, "Raw").Call(Lit(rawSvg))
 		} else if node.Type == html.ElementNode && node.DataAtom.String() != "" {
 			// Handle complex node
 			el = Qual(goAppPkg, formatTag(node.DataAtom.String())).Call()
@@ -38,6 +49,31 @@ func convertHTMLToStatements(doc *html.Node, goAppPkg string) (*Statement, error
 				// Attributes to ignore
 				if attr.Key == "gutter" || attr.Key == "onload" || attr.Key == "onclick" || attr.Key == "loading" || attr.Key == "itemscope" || attr.Key == "itemtype" || attr.Key == "itemprop" || attr.Key == "scoped" {
 					continue
+				}
+				if node.DataAtom.String() == "span" {
+					if attr.Key == "type" {
+						continue
+					}
+				}
+				if node.DataAtom.String() == "input" {
+					if attr.Key == "input" {
+						continue
+					}
+				}
+				if node.DataAtom.String() == "div" {
+					if attr.Key == "readonly" || attr.Key == "type" {
+						continue
+					}
+				}
+				if node.DataAtom.String() == "thead" {
+					if attr.Key == "scope" {
+						continue
+					}
+				}
+				if node.DataAtom.String() == "textarea" {
+					if attr.Key == "type" {
+						continue
+					}
 				}
 
 				// Handle empty attributes
@@ -69,7 +105,7 @@ func convertHTMLToStatements(doc *html.Node, goAppPkg string) (*Statement, error
 					el.Dot("").Line().Id(key)
 				}
 
-				if key == "TabIndex" {
+				if key == "TabIndex" || key == "ColSpan" || key == "Rowspan" {
 					// Parse ints for `TabIndex`
 					v, err := strconv.Atoi(fmt.Sprintf("%v", val))
 					if err != nil {
@@ -103,22 +139,22 @@ func convertHTMLToStatements(doc *html.Node, goAppPkg string) (*Statement, error
 					} else {
 						el.Call(Lit(true))
 					}
-				} else if key == "Spellcheck" {
-					// Parse booleans for `Spellcheck`
+				} else if key == "Spellcheck" || key == "ContentEditable" {
+					// Parse booleans for `Spellcheck` and `ContentEditable`
 					if val == "true" {
 						el.Call(Lit(true))
 					} else {
 						el.Call(Lit(false))
 					}
-				} else if key == "CrossOrigin" || key == "Title" {
+				} else if key == "CrossOrigin" || key == "Title" || key == "Placeholder" {
 					// Convert boolean to strings for attributes
 					if val == true {
 						el.Call(Lit("true"))
 					} else {
 						el.Call(Lit("false"))
 					}
-				} else if key == "Class" {
-					// Handle empty `Class` attributes
+				} else if key == "Class" || key == "Href" {
+					// Handle empty `Class` and `Href` attributes
 					if val == true {
 						el.Call(Lit(""))
 					} else {
@@ -138,20 +174,15 @@ func convertHTMLToStatements(doc *html.Node, goAppPkg string) (*Statement, error
 			}
 		}
 
-		children := []Code{}
+		var children []Code
 		i := 0
 		for child := node.FirstChild; child != nil; child = child.NextSibling {
-			// Tags to ignore
-			// TODO: Render SVGs using `app.Raw`
-			if child.DataAtom.String() != "svg" {
-				child, err := crawler(child, i)
-				if err != nil {
-					return nil, err
-				}
-
-				children = append(children, child)
+			child, err := crawler(child, i)
+			if err != nil {
+				return nil, err
 			}
 
+			children = append(children, child)
 			i++
 		}
 
@@ -170,9 +201,34 @@ func convertHTMLToStatements(doc *html.Node, goAppPkg string) (*Statement, error
 	return crawler(doc, 0)
 }
 
+func rawElement(node *html.Node) (string, error) {
+	result := &bytes.Buffer{}
+	err := html.Render(result, node)
+	if err != nil {
+		return "", err
+	}
+	return result.String(), nil
+}
+
 func formatTag(tag string) string {
 	if tag == "noscript" {
 		return "NoScript"
+	}
+
+	if tag == "fieldset" {
+		return "FieldSet"
+	}
+
+	if tag == "thead" {
+		return "THead"
+	}
+
+	if tag == "tbody" {
+		return "TBody"
+	}
+
+	if tag == "optgroup" {
+		return "OptGroup"
 	}
 
 	return strings.Join(strings.Fields(strings.Title(strings.ReplaceAll(tag, "-", " "))), "")
@@ -211,12 +267,24 @@ func formatKey(key string) string {
 		return "DateTime"
 	}
 
-	if key == "Tbody" {
-		return "TBody"
+	if key == "Colspan" {
+		return "ColSpan"
 	}
 
-	if key == "Fieldset" {
-		return "FieldSet"
+	if key == "Novalidate" {
+		return "NoValidate"
+	}
+
+	if key == "Currvalue" {
+		return "Value"
+	}
+
+	if key == "Readonly" {
+		return "ReadOnly"
+	}
+
+	if key == "Contenteditable" {
+		return "ContentEditable"
 	}
 
 	return key
@@ -260,7 +328,7 @@ func ConvertHTMLToComponent(
 		// Generated statements
 		Block(Return(statements))
 
-		// Format source code
+	// Format source code
 	if err := os.Setenv("GOFUMPT_SPLIT_LONG_LINES", "on"); err != nil {
 		return "", err
 	}
